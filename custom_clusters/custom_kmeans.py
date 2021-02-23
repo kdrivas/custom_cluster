@@ -4,6 +4,8 @@ import pandas as pd
 import numpy as np
 import copy
 import types
+from sklearn.utils.extmath import row_norms
+from sklearn.cluster import kmeans_plusplus
 
 def get_center_shift(centers, centers_old):
     shift = 0
@@ -34,7 +36,7 @@ def run_kmeans(X:list, centers:list, distance_function:types.LambdaType, cluster
         for i in range(n_clusters):
             points = [X[j] for j in range(len(X)) if labels[j] == i]
             centers[i] = np.mean(points, axis=0)
-
+            
         if np.array_equal(labels_old, labels):
             if verbose:
                 print(f"Converged at iteration {iter_n}: strict convergence.")
@@ -55,18 +57,23 @@ def run_kmeans(X:list, centers:list, distance_function:types.LambdaType, cluster
 
 class Custom_Kmeans(BaseEstimator, ClusterMixin):
     
-    def __init__(self, n_clusters: int, init:str='random', tol:float=1e-4 , cluster_iter:int=50, verbose:bool=True, distance_function:types.LambdaType=get_distances):
+    def __init__(self, n_clusters: int, init:str='kmeans++', tol:float=1e-4 , cluster_iter:int=50, verbose:bool=True, distance_function:types.LambdaType=get_distances, random_state:int=0):
         self.n_clusters = n_clusters
         self.tol = tol
         self.init = init
         self.cluster_iter = cluster_iter
         self.verbose = verbose
         self.distance_function = distance_function
+        self.random_state = random_state
              
-    def init_centroids(self, X:list):
+    def _init_centroids(self, X:list, x_squared_norms:list):
         
         if isinstance(self.init, str) and self.init == 'random':
             centers = np.random.permutation(X)[:self.n_clusters]
+        elif isinstance(self.init, str) and self.init == 'kmeans++':
+            centers, _ = kmeans_plusplus(X, self.n_clusters,
+                                          random_state=self.random_state,
+                                          x_squared_norms=x_squared_norms)
         else:
             raise Exception('Not implemented')
             
@@ -74,7 +81,9 @@ class Custom_Kmeans(BaseEstimator, ClusterMixin):
             
     def fit(self, X, y=None, sample_weight=None):
         
-        centers = self.init_centroids(X)
+        x_squared_norms = row_norms(X, squared=True)
+        
+        centers = self._init_centroids(X, x_squared_norms)
         labels, centers = run_kmeans(X, centers, self.distance_function, self.cluster_iter, self.n_clusters, self.tol, self.verbose)
         
         self.labels = labels
