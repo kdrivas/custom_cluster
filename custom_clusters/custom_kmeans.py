@@ -20,7 +20,7 @@ def get_distances(point:list, centers:list):
         distances.append(np.linalg.norm(center - point))
     return distances
 
-def run_kmeans(X:list, centers:list, distance_function:types.LambdaType, cluster_iter:int, n_clusters:int, tol:float, optimize_iterations:bool, verbose:bool):
+def run_kmeans(X:list, attention_start:list, attention_finish:list, centers:list, distance_function:types.LambdaType, cluster_iter:int, n_clusters:int, tol:float, optimize_iterations:bool, time_diff:float=5, verbose:bool=True):
     
     centers_old = np.zeros(centers.shape)
 
@@ -28,26 +28,69 @@ def run_kmeans(X:list, centers:list, distance_function:types.LambdaType, cluster
     labels_old = np.zeros(len(X))
     distance_to_center = np.zeros(len(X))
     
+    attended_flag = np.zeros(len(X), dtype=int)
+    attended_by = [-1] * len(X)
+    attended_by_old = [-1] * len(X)
+    
+    cant = 0
     for iter_n in range(cluster_iter):
+        finish_time = np.zeros(n_clusters, dtype='<M8[ns]')
+
         for i in range(len(X)):
             if optimize_iterations:
-                first_distance = distance_function(X[i], [centers[labels[i]]])
-                if first_distance > distance_to_center[i]:
-                    distances = distance_function(X[i], np.delete(centers, labels[i], axis=0))
-                    distances = np.insert(distances, labels[i], first_distance)
-                    distance_to_center[i] = min(distances)
-                    cluster = np.argmin(distances)
-                    labels[i] = cluster
+                avaiability = np.array([j for j in range(n_clusters) if ((attention_start[i] - finish_time[j]) / np.timedelta64(1, 's')) >= 0])
+                cluster = -1
+                flag_distance = False
+                
+                if len(avaiability):
+                    cant += 1
+                    if attended_by[i] == -1 or attended_by[i] not in avaiability:
+                        distances = distance_function(X[i], centers[avaiability])
+                        flag_distance = True
+                    else: 
+                        avaiability_aux = avaiability[avaiability != attended_by[i]]
+                        first_distance = distance_function(X[i], [centers[attended_by[i]]])
+                        if (first_distance[0]  + time_diff) > distance_to_center[i]:
+                            #Reduction request
+                            distances = distance_function(X[i], centers[avaiability_aux]) + first_distance
+                            avaiability = np.append(avaiability_aux, attended_by[i])
+                            flag_distance = True
+                    
+                    #flag_distance = True
+                    #distances = distance_function(X[i], centers[avaiability])
+                    
+                    if flag_distance:
+                        sorted_distances = np.argsort(distances)
+
+                        for distance_id in sorted_distances:
+                            if (finish_time[avaiability[distance_id]] and ((attention_start[i] - finish_time[avaiability[distance_id]]) / np.timedelta64(1, 's')) >= 0) or not finish_time[avaiability[distance_id]]:
+                                cluster = distance_id
+                                break
+                
+                if flag_distance:
+                    distance_to_center[i] = distances[cluster]
+                    attended_flag[i] = 1
+                    attended_by[i] = avaiability[cluster]
+                    finish_time[cluster] = attention_finish[i]
+                elif not flag_distance and len(avaiability):
+                    finish_time[cluster] = attention_finish[i]
+                else:
+                    distance_to_center[i] = distances[cluster]
+                    attended_flag[i] = 1
+                    attended_by[i] = cluster
+                    
             else:
-                distances = distance_function(X[i], centers)
-                cluster = np.argmin(distances)
-                labels[i] = cluster
-        
+                raise Exception('Not implemented')
+                #distances = distance_function(X[i], centers)
+                #cluster = np.argmin(distances)
+                #labels[i] = cluster
+
         for i in range(n_clusters):
-            points = [X[j] for j in range(len(X)) if labels[j] == i]
-            centers[i] = np.mean(points, axis=0)
-            
-        if np.array_equal(labels_old, labels):
+            points = [X[j] for j in range(len(X)) if attended_by[j] == i]
+            if len(points):
+                centers[i] = np.mean(points, axis=0)
+
+        if np.array_equal(attended_by_old, attended_by):
             if verbose:
                 print(f"Converged at iteration {iter_n}: strict convergence.")
             strict_convergence = True
@@ -61,11 +104,11 @@ def run_kmeans(X:list, centers:list, distance_function:types.LambdaType, cluster
                 break
                 
         centers_old = copy.deepcopy(centers)
-        labels_old = copy.deepcopy(labels)
-        
-    return labels, centers
+        attended_by_old = copy.deepcopy(attended_by)
+    
+    return attended_by, centers
 
-class Custom_Kmeans(BaseEstimator, ClusterMixin):
+class FacilityEstimator(BaseEstimator, ClusterMixin):
     
     def __init__(self, n_clusters: int, init:str='kmeans++', tol:float=1e-4 , cluster_iter:int=50, verbose:bool=True, distance_function:types.LambdaType=get_distances, optimize_iterations:bool=True, random_state:int=0):
         self.n_clusters = n_clusters
@@ -90,12 +133,12 @@ class Custom_Kmeans(BaseEstimator, ClusterMixin):
             
         return centers
             
-    def fit(self, X, y=None, sample_weight=None):
+    def fit(self, X, attention_hour, attention_times, y=None, sample_weight=None):
         
         x_squared_norms = row_norms(X, squared=True)
         
         centers = self._init_centroids(X, x_squared_norms)
-        labels, centers = run_kmeans(X, centers, self.distance_function, self.cluster_iter, self.n_clusters, self.tol, self.optimize_iterations, self.verbose)
+        labels, centers = run_kmeans(X, attention_hour, attention_times, centers, self.distance_function, self.cluster_iter, self.n_clusters, self.tol, self.optimize_iterations, self.verbose)
         
         self.labels = labels
         self.cluster_centers_ = centers
@@ -104,3 +147,4 @@ class Custom_Kmeans(BaseEstimator, ClusterMixin):
     
     def predict(self, X, sample_weight=None):
         pass
+        
